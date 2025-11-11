@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
+import { useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Send, AlertCircle, MapPin, Loader } from 'lucide-react';
 import api from '../utils/api';
 
 const CreatePostPage = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [isLoading, setIsLoading] = useState(false);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [currentLocation, setCurrentLocation] = useState(null);
@@ -110,9 +112,14 @@ const CreatePostPage = () => {
       };
 
       const response = await api.post('/posts', postData);
+      
+      // Invalidate and refetch posts
+      queryClient.invalidateQueries(['posts']);
+      
       toast.success('Post created successfully!');
       navigate(`/posts/${response.data._id}`);
     } catch (error) {
+      console.error('Post creation error:', error);
       toast.error(error.response?.data?.message || 'Failed to create post');
     } finally {
       setIsLoading(false);

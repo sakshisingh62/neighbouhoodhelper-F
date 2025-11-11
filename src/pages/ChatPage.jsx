@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Send, Search, MoreVertical, Phone, Video, Paperclip, Smile, MessageSquare, Users, X, Image as ImageIcon, Trash2, UserCircle, Ban, BellOff, Download, Eraser, Bell, Shield, Wallpaper } from 'lucide-react';
+import { Send, Search, MoreVertical, Phone, Video, Paperclip, Smile, MessageSquare, Users, X, Image as ImageIcon, Trash2, UserCircle, Ban, BellOff, Download, Eraser, Bell, Shield } from 'lucide-react';
+import ThemeSelector from '../components/ThemeSelector';
+import { getThemePreference, saveThemePreference, getThemeById } from '../utils/chatThemes';
 import EmojiPicker from 'emoji-picker-react';
 import api from '../utils/api';
 import useAuthStore from '../store/authStore';
 import socketService from '../utils/socket';
 import { getAvatarUrl } from '../utils/avatarHelper';
 import { notifyNewMessage } from '../utils/browserNotifications';
-import ChatWallpaperSelector from '../components/ChatWallpaperSelector';
-import { getWallpaperStyle, saveWallpaperPreference, getWallpaperPreference } from '../utils/chatWallpapers';
+// ...existing code...
 import SocketDebugPanel from '../components/SocketDebugPanel';
 
 const ChatPage = () => {
@@ -18,6 +19,7 @@ const ChatPage = () => {
   const [searchParams] = useSearchParams();
   const userId = searchParams.get('userId');
   const { user } = useAuthStore();
+  const navigate = useNavigate();
   const [selectedChat, setSelectedChat] = useState(null);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
@@ -30,25 +32,30 @@ const ChatPage = () => {
   const [showDropdown, setShowDropdown] = useState(false);
   const [mutedUsers, setMutedUsers] = useState(new Set());
   const [blockedUsers, setBlockedUsers] = useState(new Set());
-  const [showWallpaperSelector, setShowWallpaperSelector] = useState(false);
-  const [chatWallpaper, setChatWallpaper] = useState({ wallpaperId: 'default', customImage: null });
+  const [showThemeSelector, setShowThemeSelector] = useState(false);
+  const [chatThemeId, setChatThemeId] = useState('default');
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [showOnlineUsers, setShowOnlineUsers] = useState(true);
   const messagesEndRef = useRef(null);
+  const location = useLocation();
+  const [highlightFromNotification, setHighlightFromNotification] = useState(false);
   const typingTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const dropdownRef = useRef(null);
+  const previousChatIdRef = useRef(null); // Track previous chat to detect switches
 
   // Fetch conversations list
   const { data: conversations = [], isLoading } = useQuery({
     queryKey: ['conversations'],
     queryFn: async () => {
       const response = await api.get('/messages/chats');
-      console.log('💬 Fetched conversations:', response.data.map(c => ({
-        name: c.otherUser?.name,
-        chatId: c.chatId,
-        userId: c.otherUser?._id
-      })));
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('💬 Fetched conversations:', response.data.map(c => ({
+          name: c.otherUser?.name,
+          chatId: c.chatId,
+          userId: c.otherUser?._id
+        })));
+      }
       return response.data;
     },
   });
@@ -57,28 +64,77 @@ const ChatPage = () => {
   const { data: chatMessagesResponse, refetch: refetchMessages, isLoading: messagesLoading } = useQuery({
     queryKey: ['messages', selectedChat?.chatId],
     queryFn: async () => {
-      if (!selectedChat) return { messages: [] };
-      console.log('📨 Fetching messages for chat:', selectedChat.chatId, 'User:', selectedChat.otherUser?.name);
+      if (!selectedChat?.chatId) {
+        if (import.meta.env.VITE_CHAT_DEBUG) console.debug('⚠️ No chatId, returning empty messages');
+        return { messages: [] };
+      }
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('📨 Fetching messages for chat:', selectedChat.chatId, 'User:', selectedChat.otherUser?.name);
+      }
       const response = await api.get(`/messages/${selectedChat.chatId}`);
-      console.log('✅ Fetched messages:', response.data.messages?.length || 0);
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('✅ Fetched messages:', response.data.messages?.length || 0, 'messages');
+      }
       return response.data;
     },
-    enabled: !!selectedChat,
+    enabled: !!selectedChat?.chatId,
     refetchOnMount: true,
     staleTime: 0, // Always fetch fresh data
+    retry: 2, // Retry failed requests twice
   });
 
-  // Set messages when chat messages are loaded
+  // Set messages when chat messages are loaded.
+  // Important: only replace messages when the query returns an explicit messages array.
+  // This prevents the UI from clearing to an empty state while the next chat's messages
+  // are still being fetched (chatMessagesResponse will be undefined during loading).
   useEffect(() => {
-    if (chatMessagesResponse?.messages) {
-      console.log('📥 Setting messages in state:', chatMessagesResponse.messages.length, 'for chat:', selectedChat?.chatId);
-      setMessages(chatMessagesResponse.messages);
-    } else if (selectedChat) {
-      // If no messages returned, clear messages
-      console.log('🧹 Clearing messages for chat:', selectedChat?.chatId);
-      setMessages([]);
+    // Detect if we're switching to a different chat
+    const isSwitchingChat = previousChatIdRef.current && previousChatIdRef.current !== selectedChat?.chatId;
+    
+    if (import.meta.env.VITE_CHAT_DEBUG) {
+      console.debug('🔄 Message effect triggered:', {
+        hasResponse: !!chatMessagesResponse,
+        isArray: Array.isArray(chatMessagesResponse?.messages),
+        messageCount: chatMessagesResponse?.messages?.length,
+        isLoading: messagesLoading,
+        chatId: selectedChat?.chatId,
+        previousChatId: previousChatIdRef.current,
+        isSwitchingChat
+      });
     }
-  }, [chatMessagesResponse, selectedChat?.chatId]);
+
+    // Update the previous chatId reference
+    if (selectedChat?.chatId) {
+      previousChatIdRef.current = selectedChat.chatId;
+    }
+
+    if (chatMessagesResponse && Array.isArray(chatMessagesResponse.messages)) {
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('📥 Setting messages in state:', chatMessagesResponse.messages.length, 'for chat:', selectedChat?.chatId);
+      }
+      setMessages(chatMessagesResponse.messages);
+      
+      // Scroll to bottom after messages load (especially important for notifications)
+      setTimeout(() => scrollToBottom(), 100);
+    } else if (messagesLoading) {
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('⏳ Messages loading...');
+      }
+      // When switching chats, clear old messages to avoid confusion
+      if (isSwitchingChat) {
+        if (import.meta.env.VITE_CHAT_DEBUG) {
+          console.debug('🔄 Switching chat, clearing old messages');
+        }
+        setMessages([]);
+      }
+      // Otherwise keep existing messages while loading (for refresh/notification case)
+    } else if (!chatMessagesResponse) {
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('ℹ️ chatMessagesResponse not ready; keeping existing messages for chat:', selectedChat?.chatId);
+      }
+      // Keep existing messages until the new chat's messages arrive
+    }
+  }, [chatMessagesResponse, messagesLoading, selectedChat?.chatId]);
 
   // Mark messages as read when chat is opened
   useEffect(() => {
@@ -105,6 +161,19 @@ const ChatPage = () => {
 
   // Select chat based on URL param or userId
   useEffect(() => {
+    // Attempt to restore selectedChat from localStorage if available and no chatId/userId in URL
+    try {
+      const stored = localStorage.getItem('nh_selected_chat');
+      if (!chatId && !userId && stored && !selectedChat) {
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.chatId) {
+          setSelectedChat(parsed);
+        }
+      }
+    } catch (err) {
+      // ignore parse errors
+    }
+
     if (userId && user && conversations.length >= 0) {
       // Check if chat with this user already exists
       const existingChat = conversations.find(
@@ -112,12 +181,18 @@ const ChatPage = () => {
       );
       
       if (existingChat) {
+        if (import.meta.env.VITE_CHAT_DEBUG) {
+          console.debug('✅ Found existing chat for userId:', userId, 'Chat:', existingChat);
+        }
         setSelectedChat(existingChat);
       } else {
-        // Create a temporary chat object for new conversation
         const ids = [user._id, userId].sort();
         const newChatId = `${ids[0]}_${ids[1]}`;
-        
+
+        if (import.meta.env.VITE_CHAT_DEBUG) {
+          console.debug('🆕 Creating new chat for userId:', userId, 'chatId:', newChatId);
+        }
+
         // Fetch the other user's details
         api.get(`/users/${userId}`).then(({ data }) => {
           setSelectedChat({
@@ -131,25 +206,115 @@ const ChatPage = () => {
           toast.error('Failed to start chat');
         });
       }
-    } else if (chatId && conversations.length > 0) {
+    } else if (chatId) {
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('📬 Opening chat from URL/notification, chatId:', chatId);
+        console.debug('📋 Available conversations:', conversations.map(c => ({ chatId: c.chatId, user: c.otherUser?.name })));
+      }
+
+      // Try to find chat in conversations first (most reliable - includes last message, unread count, etc.)
       const chat = conversations.find((c) => c.chatId === chatId);
       if (chat) {
+        if (import.meta.env.VITE_CHAT_DEBUG) {
+          console.debug('✅ Found chat in conversations:', chat);
+        }
         setSelectedChat(chat);
+      } else {
+        if (import.meta.env.VITE_CHAT_DEBUG) {
+          console.debug('⚠️ Chat not in conversations list, will create minimal chat object and fetch user details');
+        }
+
+        // Parse chatId to derive other user id and fetch details
+        const parts = chatId.split('_');
+        if (parts.length === 2) {
+          const otherId = parts[0] === user?._id ? parts[1] : parts[0];
+          if (otherId) {
+            if (import.meta.env.VITE_CHAT_DEBUG) {
+              console.debug('🔍 Fetching user details for otherId:', otherId);
+            }
+
+            api.get(`/users/${otherId}`).then(({ data }) => {
+              if (import.meta.env.VITE_CHAT_DEBUG) {
+                console.debug('✅ Fetched user details:', data.user.name);
+              }
+
+              setSelectedChat({
+                chatId,
+                otherUser: data.user,
+                lastMessage: null,
+                unreadCount: 0,
+              });
+            }).catch((err) => {
+              console.error('❌ Failed to fetch user for chatId:', err);
+              toast.error('Could not load chat user details');
+            });
+          }
+        } else {
+          console.error('❌ Invalid chatId format:', chatId);
+          toast.error('Invalid chat ID');
+        }
       }
     } else if (conversations.length > 0 && !selectedChat) {
+      if (import.meta.env.VITE_CHAT_DEBUG) {
+        console.debug('📝 No chat selected, selecting first conversation');
+      }
       setSelectedChat(conversations[0]);
     }
   }, [chatId, userId, conversations, selectedChat, user]);
 
+  // Persist selectedChat to localStorage so refresh keeps current conversation
+  useEffect(() => {
+    if (selectedChat && selectedChat.chatId) {
+      try {
+        localStorage.setItem('nh_selected_chat', JSON.stringify(selectedChat));
+      } catch (err) {
+        // ignore storage errors
+      }
+    } else {
+      try { localStorage.removeItem('nh_selected_chat'); } catch (e) {}
+    }
+  }, [selectedChat]);
+
+  // If navigated from notification, briefly highlight the chat area and scroll to specific message
+  useEffect(() => {
+    if (location.state?.fromNotification) {
+      setHighlightFromNotification(true);
+      const t = setTimeout(() => setHighlightFromNotification(false), 1500);
+
+      // If there's a specific messageId to highlight, scroll to it
+      if (location.state?.messageId && messages.length > 0) {
+        setTimeout(() => {
+          const messageElement = document.getElementById(`message-${location.state.messageId}`);
+          if (messageElement) {
+            if (import.meta.env.VITE_CHAT_DEBUG) {
+              console.debug('🎯 Scrolling to and highlighting message:', location.state.messageId);
+            }
+            messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            messageElement.classList.add('bg-yellow-100', 'dark:bg-yellow-900/50', 'transition-colors', 'duration-500');
+            setTimeout(() => {
+              messageElement.classList.remove('bg-yellow-100', 'dark:bg-yellow-900/50');
+            }, 3000);
+          } else {
+            if (import.meta.env.VITE_CHAT_DEBUG) {
+              console.debug('⚠️ Message element not found for highlighting:', location.state.messageId);
+            }
+          }
+        }, 500); // Wait for messages to render
+      }
+
+      return () => clearTimeout(t);
+    }
+  }, [location.state, messages]);
+
   // Listen for online users updates
   useEffect(() => {
     const handleOnlineUsers = async (userIds) => {
-      console.log('👥 Online users updated:', userIds);
-      console.log('📍 Current user ID:', user._id);
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('👥 Online users updated:', userIds);
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('📍 Current user ID:', user._id);
       
       // Filter out current user and fetch user details
       const otherUserIds = userIds.filter(id => id !== user._id);
-      console.log('🔍 Other users (excluding me):', otherUserIds);
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('🔍 Other users (excluding me):', otherUserIds);
       
       if (otherUserIds.length > 0) {
         try {
@@ -159,7 +324,7 @@ const ChatPage = () => {
           );
           const users = await Promise.all(userPromises);
           const validUsers = users.filter(u => u !== null);
-          console.log('✅ Fetched online users:', validUsers.map(u => u.name));
+          if (import.meta.env.VITE_CHAT_DEBUG) console.debug('✅ Fetched online users:', validUsers.map(u => u.name));
           setOnlineUsers(validUsers);
         } catch (error) {
           console.error('Failed to fetch online users:', error);
@@ -170,11 +335,11 @@ const ChatPage = () => {
       }
     };
 
-    console.log('🎧 Setting up users:online listener');
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('🎧 Setting up users:online listener');
     socketService.on('users:online', handleOnlineUsers);
 
     return () => {
-      console.log('🔇 Removing users:online listener');
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('🔇 Removing users:online listener');
       socketService.off('users:online', handleOnlineUsers);
     };
   }, [user._id]);
@@ -183,11 +348,11 @@ const ChatPage = () => {
   useEffect(() => {
     if (!selectedChat) return;
 
-    console.log('🎧 Setting up socket listeners for chat:', selectedChat.chatId);
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('🎧 Setting up socket listeners for chat:', selectedChat.chatId);
 
     // Define handlers with unique references
     const handleMessageReceive = (newMessage) => {
-      console.log('📥 message:receive event received:', {
+      if (import.meta.env.VITE_CHAT_DEBUG) console.debug('📥 message:receive event received:', {
         messageId: newMessage._id,
         chatId: newMessage.chatId,
         currentChatId: selectedChat?.chatId,
@@ -195,7 +360,7 @@ const ChatPage = () => {
       });
       
       if (newMessage.chatId === selectedChat.chatId) {
-        console.log('✅ Message matches current chat - adding to messages');
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('✅ Message matches current chat - adding to messages');
         setMessages((prev) => [...prev, newMessage]);
         scrollToBottom();
         
@@ -209,7 +374,7 @@ const ChatPage = () => {
         api.put(`/messages/${selectedChat.chatId}/read`)
           .catch(error => console.error('Failed to mark as read:', error));
       } else {
-        console.log('⚠️ Message chatId does not match current chat - ignoring');
+  if (import.meta.env.VITE_CHAT_DEBUG) console.debug('⚠️ Message chatId does not match current chat - ignoring');
       }
     };
 
@@ -264,26 +429,21 @@ const ChatPage = () => {
     };
   }, [selectedChat?.chatId]);
 
-  // Load wallpaper preference when chat changes
+  // Load theme preference when chat changes
   useEffect(() => {
     if (selectedChat?.chatId) {
-      const preference = getWallpaperPreference(selectedChat.chatId);
-      console.log('Loading wallpaper for chat:', selectedChat.chatId, preference);
-      setChatWallpaper(preference);
+      const themeId = getThemePreference(selectedChat.chatId) || 'default';
+      setChatThemeId(themeId);
     } else {
-      // Set default wallpaper when no chat selected
-      setChatWallpaper({ wallpaperId: 'default', customImage: null });
+      setChatThemeId('default');
     }
   }, [selectedChat?.chatId]);
 
-  // Handle wallpaper selection
-  const handleSelectWallpaper = (wallpaperId, customImage) => {
-    console.log('Selecting wallpaper:', wallpaperId, customImage);
-    const newWallpaper = { wallpaperId, customImage };
-    setChatWallpaper(newWallpaper);
-    if (selectedChat?.chatId) {
-      saveWallpaperPreference(selectedChat.chatId, wallpaperId, customImage);
-    }
+  const handleApplyTheme = (themeId) => {
+    if (!selectedChat?.chatId) return;
+    setChatThemeId(themeId);
+    saveThemePreference(selectedChat.chatId, themeId);
+    setShowThemeSelector(false);
   };
 
   // Auto scroll to bottom
@@ -294,6 +454,28 @@ const ChatPage = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // If navigated with a messageId from a notification, scroll to and highlight that message
+  useEffect(() => {
+    const messageId = location.state?.messageId;
+    if (!messageId) return;
+
+    // Wait a bit for messages to render
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-msg-id="${messageId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Add highlight class
+        el.classList.add('ring-4', 'ring-yellow-300', 'animate-pulse');
+        // Remove highlight after 2s
+        setTimeout(() => {
+          el.classList.remove('ring-4', 'ring-yellow-300', 'animate-pulse');
+        }, 2000);
+      }
+    }, 300);
+
+    return () => clearTimeout(t);
+  }, [location.state?.messageId, messages]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -334,6 +516,7 @@ const ChatPage = () => {
         });
 
         // Add message to local state
+        console.debug('ChatPage: send image message response', response.data);
         setMessages((prev) => [...prev, response.data]);
         setMessage('');
         setSelectedImage(null);
@@ -352,10 +535,11 @@ const ChatPage = () => {
         });
       } else {
         // Text-only message
-        const response = await api.post('/messages', messageData);
+  const response = await api.post('/messages', messageData);
+  console.debug('ChatPage: send message response', response.data);
 
-        // Add message to local state
-        setMessages((prev) => [...prev, response.data]);
+  // Add message to local state
+  setMessages((prev) => [...prev, response.data]);
         setMessage('');
 
         // Emit socket event
@@ -617,7 +801,7 @@ const ChatPage = () => {
     // Emit typing start
     socketService.emit('typing:start', {
       receiverId: selectedChat.otherUser._id,
-      chatId: selectedChat._id,
+      chatId: selectedChat.chatId,
     });
 
     // Clear previous timeout
@@ -629,7 +813,7 @@ const ChatPage = () => {
     typingTimeoutRef.current = setTimeout(() => {
       socketService.emit('typing:stop', {
         receiverId: selectedChat.otherUser._id,
-        chatId: selectedChat._id,
+        chatId: selectedChat.chatId,
       });
     }, 1000);
   };
@@ -777,6 +961,7 @@ const ChatPage = () => {
                     if (existingChat) {
                       console.log('✅ Found existing chat:', existingChat.chatId);
                       setSelectedChat(existingChat);
+                      navigate(`/chat/${existingChat.chatId}`);
                     } else {
                       // Create temporary chat object
                       const ids = [user._id, onlineUser._id].sort();
@@ -789,6 +974,7 @@ const ChatPage = () => {
                       };
                       console.log('✨ Creating new chat:', newChatId, newChat);
                       setSelectedChat(newChat);
+                      navigate(`/chat/${newChatId}`);
                     }
                     setShowOnlineUsers(false); // Switch to chat view
                     console.log('🔄 Switched to chat view');
@@ -844,7 +1030,10 @@ const ChatPage = () => {
                 onClick={() => {
                   console.log('🖱️ Switching to chat:', chat.otherUser?.name, 'chatId:', chat.chatId);
                   setSelectedChat(chat);
-                  setMessages([]); // Clear old messages
+                  // Do not clear messages here; keep previous messages visible until the new chat's
+                  // messages are fetched. Clearing immediately causes the UI to appear empty when
+                  // navigating quickly or when the network is slow.
+                  navigate(`/chat/${chat.chatId}`);
                 }}
                 className={`p-4 border-b border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${
                   selectedChat?.chatId === chat.chatId ? 'bg-primary-50 dark:bg-primary-900/20' : ''
@@ -884,7 +1073,7 @@ const ChatPage = () => {
 
       {/* Chat Area */}
       {selectedChat ? (
-        <div className="flex-1 flex flex-col">
+        <div className={`flex-1 flex flex-col transition-shadow ${highlightFromNotification ? 'ring-4 ring-green-300 animate-pulse' : ''}`}>
           {console.log('💬 Rendering chat area for:', selectedChat.otherUser?.name, 'chatId:', selectedChat.chatId)}
           {/* Chat Header */}
           <div className="h-16 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-6">
@@ -990,13 +1179,12 @@ const ChatPage = () => {
                     
                     <button
                       onClick={() => {
-                        setShowWallpaperSelector(true);
+                        setShowThemeSelector(true);
                         setShowDropdown(false);
                       }}
                       className="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-3 text-gray-700 dark:text-gray-300"
                     >
-                      <Wallpaper size={18} />
-                      <span>Change Wallpaper</span>
+                      <span className="text-sm">Change Theme</span>
                     </button>
                     
                     <div className="border-t border-gray-200 dark:border-gray-700 my-2"></div>
@@ -1043,13 +1231,26 @@ const ChatPage = () => {
 
           {/* Messages */}
           <div 
-            className="flex-1 overflow-y-auto p-6 space-y-4 wallpaper-transition" 
+            className="flex-1 overflow-y-auto p-6 space-y-4" 
             style={{
-              ...getWallpaperStyle(chatWallpaper.wallpaperId, chatWallpaper.customImage),
-              transition: 'all 0.5s ease-in-out'
+              background: getThemeById(chatThemeId).gradient,
+              transition: 'background 0.4s ease',
             }}
           >
-            {messages.length === 0 ? (
+            {messagesLoading ? (
+              // Loading skeleton
+              <div className="space-y-4">
+                {[1,2,3,4].map(i => (
+                  <div key={i} className="flex items-center space-x-4">
+                    <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse" />
+                    <div className="flex-1">
+                      <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-2 animate-pulse" />
+                      <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/2 animate-pulse" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : messages.length === 0 ? (
               <div className="flex items-center justify-center h-full">
                 <p className="text-gray-500">No messages yet. Say hello! 👋</p>
               </div>
@@ -1069,7 +1270,7 @@ const ChatPage = () => {
                         </span>
                       </div>
                     )}
-                    <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'} group`}>
+                    <div id={`message-${msg._id}`} data-msg-id={msg._id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'} group`}>
                       <div className="relative flex flex-col gap-1">
                         <div className="flex items-center gap-2">
                         {/* Delete button (only for own messages, shown on hover) */}
@@ -1324,12 +1525,12 @@ const ChatPage = () => {
         </div>
       )}
 
-      {/* Wallpaper Selector Modal */}
-      <ChatWallpaperSelector
-        isOpen={showWallpaperSelector}
-        onClose={() => setShowWallpaperSelector(false)}
-        currentWallpaper={chatWallpaper}
-        onSelectWallpaper={handleSelectWallpaper}
+      {/* Theme Selector Modal */}
+      <ThemeSelector
+        isOpen={showThemeSelector}
+        onClose={() => setShowThemeSelector(false)}
+        currentThemeId={chatThemeId}
+        onApply={handleApplyTheme}
       />
 
       {/* Socket Debug Panel */}

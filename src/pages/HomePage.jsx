@@ -1,9 +1,66 @@
 import { Link } from 'react-router-dom';
 import { Users, MessageCircle, Shield } from 'lucide-react';
 import useAuthStore from '../store/authStore';
+import { useEffect } from 'react';
+import socketService from '../utils/socket';
+import api from '../utils/api';
 
 const HomePage = () => {
-  const { user } = useAuthStore();
+  const { user, updateUser } = useAuthStore();
+
+  // Fetch fresh user data on component mount
+  useEffect(() => {
+    const fetchFreshUserData = async () => {
+      if (!user) return;
+      
+      try {
+        console.log('🔄 HomePage: Fetching fresh user data from API');
+        const { data } = await api.get('/auth/me');
+        console.log('✅ HomePage: Fresh data received:', data);
+        
+        // Update authStore with fresh data
+        updateUser({
+          reputation: data.reputation,
+          completedHelps: data.completedHelps,
+          trustBadge: data.trustBadge,
+          averageRating: data.averageRating,
+          totalRatings: data.totalRatings,
+        });
+      } catch (error) {
+        console.error('❌ HomePage: Error fetching fresh user data:', error);
+      }
+    };
+
+    fetchFreshUserData();
+  }, []); // Run only once on mount
+
+  // Listen for user updates via socket (for real-time stats update)
+  useEffect(() => {
+    if (!user) return;
+
+    const handleUserUpdated = (updatedUser) => {
+      console.log('🏠 HomePage: Received user:updated event:', updatedUser);
+      
+      if (updatedUser && updatedUser._id && updatedUser._id.toString() === user._id.toString()) {
+        console.log('✅ HomePage: Updating user stats in real-time');
+        
+        // Update store which will trigger re-render
+        updateUser({
+          reputation: updatedUser.reputation,
+          completedHelps: updatedUser.completedHelps,
+          trustBadge: updatedUser.trustBadge,
+          averageRating: updatedUser.averageRating,
+          totalRatings: updatedUser.totalRatings,
+        });
+      }
+    };
+
+    socketService.on('user:updated', handleUserUpdated);
+
+    return () => {
+      socketService.off('user:updated', handleUserUpdated);
+    };
+  }, [user, updateUser]);
 
   return (
     <div className="space-y-8">

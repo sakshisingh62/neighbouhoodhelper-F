@@ -259,10 +259,19 @@ const PostsPage = () => {
                 <Link
                   key={post._id}
                   to={`/posts/${post._id}`}
-                  className="card hover:shadow-lg transition-shadow"
+                  className={`card hover:shadow-lg transition-shadow relative ${post.status === 'completed' ? 'opacity-60 grayscale pointer-events-auto' : ''}`}
                 >
+                  {/* Completed Banner */}
+                  {post.status === 'completed' && (
+                    <div className="absolute top-0 left-0 w-full flex justify-center z-10">
+                      <span className="bg-green-600 text-white text-xs font-bold px-4 py-1 rounded-b-lg flex items-center gap-2 shadow-lg mt-0">
+                        <CheckCircle size={16} className="inline-block" />
+                        Task Completed
+                      </span>
+                    </div>
+                  )}
                   {/* Header */}
-                  <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-start justify-between mb-3 mt-2">
                     <span
                       className={`px-3 py-1 rounded-full text-xs font-medium ${
                         post.type === 'help'
@@ -306,7 +315,6 @@ const PostsPage = () => {
                       <User size={14} />
                       <span className="truncate">{post.userId?.name}</span>
                     </div>
-                    
                     {post.location && (
                       <>
                         <div className="flex items-center gap-2">
@@ -315,7 +323,6 @@ const PostsPage = () => {
                             {post.location.area || post.location}
                           </span>
                         </div>
-                        
                         {/* Distance indicator */}
                         {userLocation && post.location?.coordinates && (
                           <div className="flex items-center gap-2 text-primary-600 dark:text-primary-400">
@@ -334,7 +341,6 @@ const PostsPage = () => {
                         )}
                       </>
                     )}
-                    
                     <div className="flex items-center gap-2">
                       <Calendar size={14} />
                       <span>{new Date(post.createdAt).toLocaleDateString()}</span>

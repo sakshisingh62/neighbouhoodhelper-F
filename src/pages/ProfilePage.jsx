@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -21,6 +21,7 @@ import {
 import api from '../utils/api';
 import useAuthStore from '../store/authStore';
 import { getAvatarUrl } from '../utils/avatarHelper';
+import socketService from '../utils/socket';
 
 const ProfilePage = () => {
   const { user, updateUser } = useAuthStore();
@@ -28,6 +29,40 @@ const ProfilePage = () => {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
   const queryClient = useQueryClient();
+
+  // Listen for real-time user updates via socket
+  useEffect(() => {
+    const handleUserUpdated = (updatedUser) => {
+      console.log('👤 ProfilePage: Received user:updated event:', updatedUser);
+      
+      if (updatedUser._id === user?._id) {
+        console.log('✅ User IDs match, invalidating profile queries...');
+        
+        // Update auth store
+        updateUser({
+          reputation: updatedUser.reputation,
+          completedHelps: updatedUser.completedHelps,
+          trustBadge: updatedUser.trustBadge,
+          averageRating: updatedUser.averageRating,
+          totalRatings: updatedUser.totalRatings,
+        });
+        
+        // Invalidate React Query cache to refetch profile data
+        queryClient.invalidateQueries(['user-profile', user._id]);
+        queryClient.invalidateQueries(['auth']);
+        
+        console.log('✅ ProfilePage: User store and cache updated!');
+      }
+    };
+
+    socketService.on('user:updated', handleUserUpdated);
+    console.log('👂 ProfilePage: Listening for user:updated events');
+
+    return () => {
+      socketService.off('user:updated', handleUserUpdated);
+      console.log('🔇 ProfilePage: Stopped listening for user:updated events');
+    };
+  }, [user, updateUser, queryClient]);
 
   // Upload avatar mutation
   const uploadAvatarMutation = useMutation({

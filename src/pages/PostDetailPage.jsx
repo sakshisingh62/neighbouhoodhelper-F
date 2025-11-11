@@ -25,7 +25,7 @@ const PostDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user } = useAuthStore();
+  const { user, updateUser } = useAuthStore();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Fetch post details
@@ -38,6 +38,33 @@ const PostDetailPage = () => {
   });
 
   // Delete post mutation
+  // Mark as completed mutation
+  const completeMutation = useMutation({
+    mutationFn: async () => {
+      await api.put(`/posts/${id}`, { status: 'completed' });
+    },
+    onSuccess: async () => {
+      toast.success('Task marked as completed!');
+      queryClient.invalidateQueries(['post', id]);
+      queryClient.invalidateQueries(['posts']);
+
+      // Refresh current user so Completed Helps and reputation update on HomePage
+      try {
+        const { data: me } = await api.get('/auth/me');
+        if (me) {
+          updateUser(me);
+        }
+      } catch (err) {
+        // non-fatal: ignore
+      }
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.message || 'Failed to mark as completed');
+    },
+  });
+  const handleMarkCompleted = () => {
+    completeMutation.mutate();
+  };
   const deleteMutation = useMutation({
     mutationFn: async () => {
       await api.delete(`/posts/${id}`);
@@ -65,6 +92,33 @@ const PostDetailPage = () => {
       toast.error(error.response?.data?.message || 'Failed to mark interest');
     },
   });
+
+  // Assign helper mutation
+  const assignHelperMutation = useMutation({
+    mutationFn: async (helperId) => {
+      await api.put(`/posts/${id}`, { 
+        status: 'in-progress',
+        helpedBy: helperId  // Changed from helperId to helpedBy
+      });
+    },
+    onSuccess: () => {
+      toast.success('Helper assigned successfully!');
+      queryClient.invalidateQueries(['post', id]);
+      queryClient.invalidateQueries(['posts']);
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.message || 'Failed to assign helper');
+    },
+  });
+
+  const handleAssignHelper = (helperId) => {
+    if (!user) {
+      toast.error('Please login');
+      navigate('/login');
+      return;
+    }
+    assignHelperMutation.mutate(helperId);
+  };
 
   const handleDelete = () => {
     deleteMutation.mutate();
@@ -186,6 +240,18 @@ const PostDetailPage = () => {
               >
                 <Trash2 size={20} />
               </button>
+              {/* Mark as Completed button */}
+              {post.status !== 'completed' && (
+                <button
+                  onClick={handleMarkCompleted}
+                  disabled={completeMutation.isPending}
+                  className="p-2 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg"
+                  title="Mark as Completed"
+                >
+                  <CheckCircle size={20} />
+                  <span className="ml-1">{completeMutation.isPending ? 'Marking...' : 'Mark as Completed'}</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -317,20 +383,38 @@ const PostDetailPage = () => {
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
               Interested Users ({post.interestedUsers.length})
             </h3>
-            <div className="flex flex-wrap gap-3">
+            <div className="space-y-3">
               {post.interestedUsers.map((interestedUser) => (
                 <div
                   key={interestedUser._id}
-                  className="flex items-center gap-2 bg-gray-100 dark:bg-gray-700 px-3 py-2 rounded-lg"
+                  className="flex items-center justify-between bg-gray-100 dark:bg-gray-700 px-4 py-3 rounded-lg"
                 >
-                  <img
-                    src={getAvatarUrl(interestedUser.avatar)}
-                    alt={interestedUser.name}
-                    className="w-8 h-8 rounded-full object-cover"
-                  />
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    {interestedUser.name}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={getAvatarUrl(interestedUser.avatar)}
+                      alt={interestedUser.name}
+                      className="w-10 h-10 rounded-full object-cover"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-900 dark:text-white block">
+                        {interestedUser.name}
+                      </span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">
+                        {interestedUser.email}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {/* Show Assign Helper button only to post owner and if post is open/active */}
+                  {user?._id === post.userId._id && (post.status === 'open' || post.status === 'active') && (
+                    <button
+                      onClick={() => handleAssignHelper(interestedUser._id)}
+                      disabled={assignHelperMutation.isLoading}
+                      className="btn btn-primary btn-sm"
+                    >
+                      {assignHelperMutation.isLoading ? 'Assigning...' : 'Assign Helper'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

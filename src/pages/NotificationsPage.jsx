@@ -20,17 +20,28 @@ import {
 } from 'lucide-react';
 import api from '../utils/api';
 import { toast } from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
+import useNotificationStore from '../store/notificationStore';
 
 const NotificationsPage = () => {
   const [filter, setFilter] = useState('all'); // all, unread, read
   const queryClient = useQueryClient();
+  const { setUnreadCount } = useNotificationStore();
 
   // Fetch notifications
   const { data: notifications, isLoading, error } = useQuery({
     queryKey: ['notifications'],
     queryFn: async () => {
       const { data } = await api.get('/notifications');
-      return data.notifications || data; // Handle both response formats
+      const notifs = data.notifications || data;
+      
+      // Update unread count in store
+      const unreadCount = Array.isArray(notifs) 
+        ? notifs.filter(n => !n.read).length 
+        : 0;
+      setUnreadCount(unreadCount);
+      
+      return notifs;
     },
   });
 
@@ -42,6 +53,8 @@ const NotificationsPage = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries(['notifications']);
+      // Decrease unread count
+      setUnreadCount(Math.max(0, (notifications?.filter(n => !n.read).length || 0) - 1));
     },
   });
 
@@ -53,6 +66,7 @@ const NotificationsPage = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries(['notifications']);
+      setUnreadCount(0); // Set to 0 when all marked as read
       toast.success('All notifications marked as read');
     },
   });
@@ -100,23 +114,78 @@ const NotificationsPage = () => {
     }
   };
 
-  // Get notification icon
+  // Get notification icon based on type
   const getNotificationIcon = (type) => {
     switch (type) {
-      case 'message':
+      case 'new_message':
         return <MessageCircle className="text-blue-500" size={24} />;
-      case 'like':
-        return <Heart className="text-red-500" size={24} />;
-      case 'follow':
+      case 'post_interest':
+        return <Heart className="text-orange-500" size={24} />;
+      case 'helper_assigned':
         return <UserPlus className="text-green-500" size={24} />;
-      case 'comment':
-        return <MessageSquare className="text-purple-500" size={24} />;
-      case 'rating':
+      case 'post_completed':
+        return <CheckCheck className="text-green-600" size={24} />;
+      case 'rating_received':
         return <Star className="text-yellow-500" size={24} />;
-      case 'post':
-        return <Bell className="text-orange-500" size={24} />;
+      case 'badge_earned':
+        return <Star className="text-purple-500 fill-purple-500" size={24} />;
+      case 'post_expiring':
+        return <Clock className="text-red-500" size={24} />;
+      case 'system':
+        return <Bell className="text-gray-500" size={24} />;
       default:
         return <Bell className="text-gray-500" size={24} />;
+    }
+  };
+
+  const navigate = useNavigate();
+
+  // Handle click on notification: mark read and navigate to related resource
+  const handleNotificationClick = async (notification) => {
+    try {
+      // Mark as read first
+      if (!notification.read) {
+        await markAsReadMutation.mutateAsync(notification._id);
+      }
+
+      // Use actionUrl if available (backend stores it as actionUrl, not link)
+      if (notification.actionUrl) {
+        navigate(notification.actionUrl);
+        return;
+      }
+
+      // Route based on notification type and relatedId
+      switch (notification.type) {
+        case 'new_message':
+          // Navigate to chat with the sender (relatedId is senderId)
+          if (notification.relatedId) {
+            navigate(`/chat?userId=${notification.relatedId}`);
+          }
+          break;
+
+        case 'post_interest':
+        case 'post_completed':
+        case 'post_expiring':
+        case 'helper_assigned':
+          // Navigate to the post (relatedId is postId)
+          if (notification.relatedId) {
+            navigate(`/posts/${notification.relatedId}`);
+          }
+          break;
+
+        case 'rating_received':
+        case 'badge_earned':
+          // Navigate to user's own profile
+          navigate('/profile');
+          break;
+
+        default:
+          // Fallback: show a toast
+          toast.info('Notification opened');
+      }
+    } catch (error) {
+      console.error('Failed to open notification:', error);
+      toast.error('Failed to open notification');
     }
   };
 
@@ -248,7 +317,7 @@ const NotificationsPage = () => {
             filteredNotifications?.map((notification) => (
               <div
                 key={notification._id}
-                onClick={() => !notification.read && handleMarkAsRead(notification._id)}
+                onClick={() => handleNotificationClick(notification)}
                 className={`card cursor-pointer transition-all hover:shadow-md ${
                   !notification.read 
                     ? 'bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-500' 
@@ -264,20 +333,21 @@ const NotificationsPage = () => {
                   {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-2 mb-1">
-                      <p className={`text-sm ${!notification.read ? 'font-semibold text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>
-                        {notification.message}
-                      </p>
+                      <div>
+                        <p className={`text-sm ${!notification.read ? 'font-semibold text-gray-900 dark:text-white' : 'font-medium text-gray-800 dark:text-gray-200'}`}>
+                          {notification.title}
+                        </p>
+                        {notification.content && (
+                          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                            {notification.content}
+                          </p>
+                        )}
+                      </div>
                       {!notification.read && (
                         <span className="flex-shrink-0 w-2 h-2 bg-blue-500 rounded-full mt-2"></span>
                       )}
                     </div>
                     
-                    {notification.content && (
-                      <p className="text-sm text-gray-600 dark:text-gray-400 mb-2 line-clamp-2">
-                        {notification.content}
-                      </p>
-                    )}
-
                     {/* Meta Info */}
                     <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
                       <div className="flex items-center gap-1">
@@ -293,10 +363,10 @@ const NotificationsPage = () => {
                       )}
                     </div>
 
-                    {/* Link if available */}
-                    {notification.link && (
+                    {/* Action URL link if available */}
+                    {notification.actionUrl && (
                       <Link
-                        to={notification.link}
+                        to={notification.actionUrl}
                         className="inline-block mt-2 text-sm text-primary-600 hover:text-primary-700 font-medium"
                         onClick={(e) => e.stopPropagation()}
                       >
